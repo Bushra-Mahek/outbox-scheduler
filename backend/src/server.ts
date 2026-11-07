@@ -3,8 +3,10 @@ import "dotenv/config";
 
 import app from "./app.js";
 import pool from "./config/db.js";
+import { initializeElasticsearch } from "./config/elasticsearch.js";
 import { createRedisConnection } from "./config/redis.js";
 import { emailQueue } from "./queues/emailQueue.js";
+import { synchronizeEmailIndex } from "./services/emailIndexSync.js";
 
 const PORT = Number(process.env.PORT) || 5000;
 
@@ -18,6 +20,9 @@ const startServer = async (): Promise<void> => {
     await redis.ping();
     console.log("Redis connected successfully.");
 
+    await initializeElasticsearch();
+    await synchronizeEmailIndex();
+    
     const server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
       console.log(

@@ -13,7 +13,13 @@ import {
   sendEmail
 } from "../services/emailService.js";
 
-import { reserveEmailSendSlot } from "../utils/emailRateLimiter.js";
+import {
+  updateIndexedEmailStatus
+} from "../services/searchService.js";
+
+import {
+  reserveEmailSendSlot
+} from "../utils/emailRateLimiter.js";
 
 interface EmailJobData {
   emailId: string;
@@ -35,29 +41,10 @@ const concurrency = Math.max(
   Number(process.env.WORKER_CONCURRENCY) || 5
 );
 
-const updateCampaignAfterSuccess = async (
-  campaignId: string | null
+// Mark an email as sent and update its campaign atomically.
+const markEmailAsSent = async (
+  emailId: string
 ): Promise<void> => {
-  if (!campaignId) return;
-
-  await pool.query(
-    `UPDATE campaigns
-     SET sent_count = sent_count + 1,
-         status = CASE
-           WHEN sent_count + failed_count + 1 >= total_recipients
-             THEN CASE
-               WHEN failed_count > 0 THEN 'partially_failed'
-               ELSE 'completed'
-             END
-           ELSE 'processing'
-         END,
-         updated_at = NOW()
-     WHERE id = $1`,
-    [campaignId]
-  );
-};
-
-const markEmailAsSent = async (emailId: string): Promise<void> => {
   const client = await pool.connect();
 
   try {
@@ -140,6 +127,7 @@ const startWorker = async (): Promise<void> => {
         throw new Error(`Email record not found: ${emailId}`);
       }
 
+      // Skip emails that are already completed or cancelled.
       if (
         email.status === "cancelled" ||
         email.status === "sent" ||
@@ -197,7 +185,7 @@ const startWorker = async (): Promise<void> => {
         };
       }
 
-      // Check the campaign's hourly limit and sending delay.
+      // Check campaign hourly limit and sending delay.
       if (email.campaign_id) {
         const waitMs = await reserveEmailSendSlot(
           redis,
@@ -208,10 +196,12 @@ const startWorker = async (): Promise<void> => {
 
         if (waitMs > 0) {
           if (!job.token) {
-            throw new Error("BullMQ job lock token is unavailable");
+            throw new Error(
+              "BullMQ job lock token is unavailable"
+            );
           }
 
-          // Restore the database state before deferring the job.
+          // Restore database state before deferring the job.
           await pool.query(
             `UPDATE emails
              SET status = 'scheduled',
@@ -228,20 +218,38 @@ const startWorker = async (): Promise<void> => {
             `Deferring ${emailId} by ${Math.ceil(waitMs / 1000)} seconds.`
           );
 
-          await job.moveToDelayed(deferredUntil, job.token);
+          await job.moveToDelayed(
+            deferredUntil,
+            job.token
+          );
 
           throw new DelayedError();
         }
       }
 
-      // Send the email only after it has passed the rate limiter.
+      // Send the email after passing the rate limiter.
       const emailResult = await sendEmail({
         recipient: email.recipient,
         subject: email.subject,
         body: email.body
       });
 
+      // Commit PostgreSQL status first.
       await markEmailAsSent(emailId);
+
+      // Synchronize Elasticsearch after successful database commit.
+      try {
+        await updateIndexedEmailStatus(
+          emailId,
+          "sent",
+          new Date().toISOString()
+        );
+      } catch (error) {
+        console.error(
+          "Elasticsearch sent status update failed:",
+          error
+        );
+      }
 
       console.log("Email sent successfully:", emailId);
       console.log("Preview URL:", emailResult.previewUrl);
@@ -253,7 +261,7 @@ const startWorker = async (): Promise<void> => {
       };
     },
     {
-      connection: createRedisConnection(),
+      connection: redis,
       concurrency
     }
   );
@@ -262,16 +270,24 @@ const startWorker = async (): Promise<void> => {
     console.log("Job completed:", job.id);
   });
 
+  // Handle permanent job failures after all retries are exhausted.
   worker.on("failed", async (job, error) => {
-    console.error("Job failed:", job?.id, error.message);
+    console.error(
+      "Job failed:",
+      job?.id,
+      error.message
+    );
 
     if (!job) return;
 
     const maxAttempts = job.opts.attempts ?? 1;
 
+    // Allow BullMQ retries before marking the email permanently failed.
     if (job.attemptsMade < maxAttempts) {
       return;
     }
+
+    let emailMarkedFailed = false;
 
     try {
       const client = await pool.connect();
@@ -291,6 +307,8 @@ const startWorker = async (): Promise<void> => {
         );
 
         if ((updateResult.rowCount ?? 0) > 0) {
+          emailMarkedFailed = true;
+
           const campaignId = updateResult.rows[0].campaign_id;
 
           if (campaignId) {
@@ -319,8 +337,26 @@ const startWorker = async (): Promise<void> => {
       } finally {
         client.release();
       }
+
+      // Update Elasticsearch only after PostgreSQL commits.
+      if (emailMarkedFailed) {
+        try {
+          await updateIndexedEmailStatus(
+            job.data.emailId,
+            "failed"
+          );
+        } catch (error) {
+          console.error(
+            "Elasticsearch failure status update failed:",
+            error
+          );
+        }
+      }
     } catch (dbError) {
-      console.error("Failed to update email status:", dbError);
+      console.error(
+        "Failed to update email status:",
+        dbError
+      );
     }
   });
 
@@ -328,6 +364,7 @@ const startWorker = async (): Promise<void> => {
     console.error("Worker error:", error);
   });
 
+  // Graceful shutdown.
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`${signal} received. Closing worker...`);
 
@@ -341,7 +378,9 @@ const startWorker = async (): Promise<void> => {
   process.once("SIGINT", () => void shutdown("SIGINT"));
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
-  console.log(`Email worker started. Concurrency: ${concurrency}`);
+  console.log(
+    `Email worker started. Concurrency: ${concurrency}`
+  );
 };
 
 startWorker().catch((error: unknown) => {

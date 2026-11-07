@@ -2,7 +2,11 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-
+import {
+  bulkIndexEmails,
+  updateIndexedEmailStatus,
+  type EmailSearchDocument
+} from "../services/searchService.js";
 import pool from "../config/db.js";
 import { emailQueue } from "../queues/emailQueue.js";
 
@@ -165,6 +169,33 @@ export const scheduleEmail = async (
 
     await client.query("COMMIT");
     transactionStarted = false;
+    
+try {
+  const documents: EmailSearchDocument[] = emails.map((email) => ({
+    emailId: email.id,
+    campaignId,
+    campaignName: campaignName ?? null,
+    recipient: email.recipient,
+    subject: email.subject,
+    body: email.body,
+    status: email.status,
+    scheduledAt: scheduledTime.toISOString(),
+    sentAt: null,
+    createdAt: new Date(email.created_at).toISOString()
+  }));
+
+  await bulkIndexEmails(documents);
+
+  console.log(
+    `Indexed ${documents.length} campaign emails in Elasticsearch.`
+  );
+} catch (indexError) {
+  console.error(
+    "Campaign created, but Elasticsearch indexing failed:",
+    indexError
+  );
+}
+
 
     console.log(
       `Campaign ${campaignId} created with ${emails.length} recipients`
@@ -173,8 +204,9 @@ export const scheduleEmail = async (
     // Each recipient receives an independent BullMQ job.
     // Jobs are staggered according to delaySeconds.
     const queueResults = await Promise.allSettled(
-      emails.map(async (email) => {
-  const totalDelay = baseDelay;
+      emails.map(async (email, index) => {
+  const totalDelay =
+    baseDelay + index * delaySeconds * 1000;
 
         const job = await emailQueue.add(
           "send-email",
@@ -227,6 +259,12 @@ export const scheduleEmail = async (
            WHERE id = $2 AND status = 'scheduled'`,
           [errorMessage, failedEmail.id]
         );
+        try {
+  await updateIndexedEmailStatus(failedEmail.id, "failed");
+} catch (error) {
+  console.error("Elasticsearch failure status update failed:", error);
+}
+        
       }
     }
 
@@ -419,6 +457,12 @@ export const cancelEmail = async (
         message: "Email status changed before cancellation completed"
       });
     }
+
+    try {
+  await updateIndexedEmailStatus(id, "cancelled");
+} catch (error) {
+  console.error("Elasticsearch cancellation update failed:", error);
+}
 
     return res.status(200).json({
       success: true,
