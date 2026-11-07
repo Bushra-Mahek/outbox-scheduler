@@ -1,5 +1,9 @@
 
-import { Worker, type Job } from "bullmq";
+import {
+  Worker,
+  DelayedError,
+  type Job
+} from "bullmq";
 
 import pool from "../config/db.js";
 import { createRedisConnection } from "../config/redis.js";
@@ -8,6 +12,8 @@ import {
   initializeEmailService,
   sendEmail
 } from "../services/emailService.js";
+
+import { reserveEmailSendSlot } from "../utils/emailRateLimiter.js";
 
 interface EmailJobData {
   emailId: string;
@@ -20,6 +26,8 @@ interface EmailRecord {
   body: string;
   status: string;
   campaign_id: string | null;
+  delay_seconds: number;
+  hourly_limit: number | null;
 }
 
 const concurrency = Math.max(
@@ -49,8 +57,59 @@ const updateCampaignAfterSuccess = async (
   );
 };
 
+const markEmailAsSent = async (emailId: string): Promise<void> => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const result = await client.query(
+      `UPDATE emails
+       SET status = 'sent',
+           sent_at = NOW(),
+           error_message = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+         AND status = 'processing'
+       RETURNING campaign_id`,
+      [emailId]
+    );
+
+    if ((result.rowCount ?? 0) > 0) {
+      const campaignId = result.rows[0].campaign_id;
+
+      if (campaignId) {
+        await client.query(
+          `UPDATE campaigns
+           SET sent_count = sent_count + 1,
+               status = CASE
+                 WHEN sent_count + failed_count + 1 >= total_recipients
+                   THEN CASE
+                     WHEN failed_count > 0 THEN 'partially_failed'
+                     ELSE 'completed'
+                   END
+                 ELSE 'processing'
+               END,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [campaignId]
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const startWorker = async (): Promise<void> => {
   await initializeEmailService();
+
+  const redis = createRedisConnection();
 
   const worker = new Worker<EmailJobData>(
     "email-queue",
@@ -60,9 +119,18 @@ const startWorker = async (): Promise<void> => {
       console.log("Processing scheduled email:", emailId);
 
       const result = await pool.query<EmailRecord>(
-        `SELECT id, recipient, subject, body, status, campaign_id
-         FROM emails
-         WHERE id = $1`,
+        `SELECT
+           e.id,
+           e.recipient,
+           e.subject,
+           e.body,
+           e.status,
+           e.campaign_id,
+           COALESCE(c.delay_seconds, 0) AS delay_seconds,
+           c.hourly_limit
+         FROM emails e
+         LEFT JOIN campaigns c ON c.id = e.campaign_id
+         WHERE e.id = $1`,
         [emailId]
       );
 
@@ -72,76 +140,108 @@ const startWorker = async (): Promise<void> => {
         throw new Error(`Email record not found: ${emailId}`);
       }
 
-      if (email.status === "cancelled") {
-        console.log("Email cancelled. Skipping:", emailId);
-        return { skipped: true, reason: "cancelled" };
+      if (
+        email.status === "cancelled" ||
+        email.status === "sent" ||
+        email.status === "failed"
+      ) {
+        return {
+          skipped: true,
+          reason: email.status
+        };
       }
 
-      if (email.status === "sent") {
-        console.log("Email already sent. Skipping:", emailId);
-        return { skipped: true, reason: "already_sent" };
-      }
-
-      // Claim the email only if it is still scheduled.
-      // This reduces the chance of two workers processing it.
-      const claimResult = await pool.query(
-        `UPDATE emails
-         SET status = 'processing',
-             attempt_count = attempt_count + 1,
-             last_attempt_at = NOW(),
-             updated_at = NOW()
-         WHERE id = $1
-           AND status = 'scheduled'
-         RETURNING id`,
-        [emailId]
-      );
-
-      if (claimResult.rowCount === 0) {
-        const latest = await pool.query(
-          `SELECT status FROM emails WHERE id = $1`,
+      // Claim the email before reserving a Redis sending slot.
+      if (email.status === "scheduled") {
+        const claimResult = await pool.query(
+          `UPDATE emails
+           SET status = 'processing',
+               attempt_count = attempt_count + 1,
+               last_attempt_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $1
+             AND status = 'scheduled'
+           RETURNING id`,
           [emailId]
         );
 
-        const latestStatus = latest.rows[0]?.status;
+        if ((claimResult.rowCount ?? 0) === 0) {
+          const latest = await pool.query(
+            `SELECT status FROM emails WHERE id = $1`,
+            [emailId]
+          );
 
-        if (latestStatus === "sent" || latestStatus === "cancelled") {
-          return { skipped: true, reason: latestStatus };
+          const latestStatus = latest.rows[0]?.status;
+
+          if (
+            latestStatus === "sent" ||
+            latestStatus === "cancelled" ||
+            latestStatus === "failed"
+          ) {
+            return {
+              skipped: true,
+              reason: latestStatus
+            };
+          }
+
+          if (latestStatus !== "processing") {
+            throw new Error(
+              `Unable to claim email. Current status: ${latestStatus}`
+            );
+          }
         }
+      } else if (email.status !== "processing") {
+        return {
+          skipped: true,
+          reason: email.status
+        };
+      }
 
-        // A processing record may be a retry after a previous attempt.
-        // Continue retrying only when BullMQ invokes this job again.
-        if (latestStatus !== "processing") {
-          throw new Error(`Unexpected email status: ${latestStatus}`);
+      // Check the campaign's hourly limit and sending delay.
+      if (email.campaign_id) {
+        const waitMs = await reserveEmailSendSlot(
+          redis,
+          email.campaign_id,
+          email.hourly_limit,
+          email.delay_seconds
+        );
+
+        if (waitMs > 0) {
+          if (!job.token) {
+            throw new Error("BullMQ job lock token is unavailable");
+          }
+
+          // Restore the database state before deferring the job.
+          await pool.query(
+            `UPDATE emails
+             SET status = 'scheduled',
+                 updated_at = NOW()
+             WHERE id = $1
+               AND status = 'processing'`,
+            [emailId]
+          );
+
+          const deferredUntil = Date.now() + waitMs;
+
+          console.log(
+            `Rate limit/delay reached for campaign ${email.campaign_id}. ` +
+            `Deferring ${emailId} by ${Math.ceil(waitMs / 1000)} seconds.`
+          );
+
+          await job.moveToDelayed(deferredUntil, job.token);
+
+          throw new DelayedError();
         }
       }
 
-      // Send through the existing Ethereal SMTP service.
+      // Send the email only after it has passed the rate limiter.
       const emailResult = await sendEmail({
         recipient: email.recipient,
         subject: email.subject,
         body: email.body
       });
 
-      // Persist successful SMTP acceptance.
-      const updateResult = await pool.query(
-        `UPDATE emails
-         SET status = 'sent',
-             sent_at = NOW(),
-             error_message = NULL,
-             updated_at = NOW()
-         WHERE id = $1
-           AND status != 'sent'
-         RETURNING campaign_id`,
-        [emailId]
-      );
-
-      if (updateResult.rowCount === 0) {
-        console.warn("Email status was already updated:", emailId);
-      } else {
-        await updateCampaignAfterSuccess(
-          updateResult.rows[0].campaign_id
-        );
-      }
+      await markEmailAsSent(emailId);
 
       console.log("Email sent successfully:", emailId);
       console.log("Preview URL:", emailResult.previewUrl);
@@ -174,42 +274,53 @@ const startWorker = async (): Promise<void> => {
     }
 
     try {
-      const updateResult = await pool.query(
-        `UPDATE emails
-         SET status = 'failed',
-             error_message = $1,
-             updated_at = NOW()
-         WHERE id = $2
-           AND status NOT IN ('sent', 'failed', 'cancelled')
-         RETURNING campaign_id`,
-        [error.message, job.data.emailId]
-      );
+      const client = await pool.connect();
 
-     if ((updateResult.rowCount ?? 0) > 0) {
-        const campaignId = updateResult.rows[0].campaign_id;
+      try {
+        await client.query("BEGIN");
 
-        if (campaignId) {
-          await pool.query(
-            `UPDATE campaigns
-             SET failed_count = failed_count + 1,
-                 status = CASE
-                   WHEN sent_count + failed_count + 1 >= total_recipients
-                     THEN CASE
-                       WHEN sent_count > 0 THEN 'partially_failed'
-                       ELSE 'failed'
-                     END
-                   ELSE 'processing'
-                 END,
-                 updated_at = NOW()
-             WHERE id = $1`,
-            [campaignId]
-          );
+        const updateResult = await client.query(
+          `UPDATE emails
+           SET status = 'failed',
+               error_message = $1,
+               updated_at = NOW()
+           WHERE id = $2
+             AND status NOT IN ('sent', 'failed', 'cancelled')
+           RETURNING campaign_id`,
+          [error.message, job.data.emailId]
+        );
+
+        if ((updateResult.rowCount ?? 0) > 0) {
+          const campaignId = updateResult.rows[0].campaign_id;
+
+          if (campaignId) {
+            await client.query(
+              `UPDATE campaigns
+               SET failed_count = failed_count + 1,
+                   status = CASE
+                     WHEN sent_count + failed_count + 1 >= total_recipients
+                       THEN CASE
+                         WHEN sent_count > 0 THEN 'partially_failed'
+                         ELSE 'failed'
+                       END
+                     ELSE 'processing'
+                   END,
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [campaignId]
+            );
+          }
         }
-      }
 
-      console.log("Final failure recorded:", job.data.emailId);
-    } catch (dbError: unknown) {
-      console.error("Failed to record final email failure:", dbError);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (dbError) {
+      console.error("Failed to update email status:", dbError);
     }
   });
 
@@ -221,6 +332,7 @@ const startWorker = async (): Promise<void> => {
     console.log(`${signal} received. Closing worker...`);
 
     await worker.close();
+    await redis.quit();
     await pool.end();
 
     process.exit(0);

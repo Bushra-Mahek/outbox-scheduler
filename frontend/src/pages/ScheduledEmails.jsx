@@ -68,5 +68,4 @@ const ScheduledEmails = () => {
     </MainLayout>
   );
 };
-
 export default ScheduledEmails;

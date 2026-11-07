@@ -173,9 +173,8 @@ export const scheduleEmail = async (
     // Each recipient receives an independent BullMQ job.
     // Jobs are staggered according to delaySeconds.
     const queueResults = await Promise.allSettled(
-      emails.map(async (email, index) => {
-        const staggerDelay = index * delaySeconds * 1000;
-        const totalDelay = baseDelay + staggerDelay;
+      emails.map(async (email) => {
+  const totalDelay = baseDelay;
 
         const job = await emailQueue.add(
           "send-email",

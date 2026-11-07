@@ -1,18 +1,38 @@
 
-const StatsCards = ({ scheduledCount, sentCount }) => {
+const StatsCards = ({ scheduledCount = 0, sentCount = 0 }) => {
   const stats = [
-    { label: "Scheduled emails", value: scheduledCount },
-    { label: "Successfully sent", value: sentCount },
-    { label: "Total emails", value: scheduledCount + sentCount }
+    {
+      label: "Scheduled Emails",
+      value: scheduledCount,
+      icon: "◷",
+      description: "Emails waiting to be sent"
+    },
+    {
+      label: "Sent Emails",
+      value: sentCount,
+      icon: "✓",
+      description: "Successfully processed emails"
+    },
+    {
+      label: "Total Emails",
+      value: scheduledCount + sentCount,
+      icon: "✉",
+      description: "Total tracked emails"
+    }
   ];
 
   return (
-    <section className="stats">
+    <section className="stats-grid">
       {stats.map((stat) => (
-        <div className="stat-card" key={stat.label}>
-          <span>{stat.label}</span>
-          <h2>{stat.value}</h2>
-        </div>
+        <article className="stat-card" key={stat.label}>
+          <div className="stat-card-top">
+            <span>{stat.label}</span>
+            <span className="stat-icon">{stat.icon}</span>
+          </div>
+
+          <h3>{stat.value}</h3>
+          <p>{stat.description}</p>
+        </article>
       ))}
     </section>
   );
