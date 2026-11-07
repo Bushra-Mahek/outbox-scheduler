@@ -1,20 +1,14 @@
-
 import express from "express";
 import cors from "cors";
-import emailRoutes from "./routes/emailRoutes.js";
-
+import emailRoutes from "./src/routes/emailRoutes.js";
 const app = express();
-
 app.use(cors({
-  origin: "http://localhost:5173"
+    origin: "http://localhost:5173"
 }));
-
 app.use(express.json());
-
 app.get("/api/health", (req, res) => {
-  res.json({ success: true, message: "Server is running" });
+    res.json({ success: true, message: "Server is running" });
 });
-
 app.use("/api/emails", emailRoutes);
-
 export default app;
+//# sourceMappingURL=app.js.map
