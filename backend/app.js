@@ -6,16 +6,13 @@ import emailRoutes from "./routes/emailRoutes.js";
 const app = express();
 
 app.use(cors({
-    origin: "http://localhost:5173"
+  origin: "http://localhost:5173"
 }));
 
 app.use(express.json());
 
 app.get("/api/health", (req, res) => {
-    res.status(200).json({
-        success: true,
-        message: "Outbox Scheduler API is running"
-    });
+  res.json({ success: true, message: "Server is running" });
 });
 
 app.use("/api/emails", emailRoutes);
