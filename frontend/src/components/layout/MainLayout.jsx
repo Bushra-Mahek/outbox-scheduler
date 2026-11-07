@@ -1,10 +1,10 @@
 
 import Sidebar from "./Sidebar";
 
-const MainLayout = ({ children, activePage }) => {
+const MainLayout = ({ children }) => {
   return (
     <div className="app">
-      <Sidebar activePage={activePage} />
+      <Sidebar />
 
       <main className="main">
         {children}

@@ -1,9 +1,11 @@
 
-const Sidebar = ({ activePage = "dashboard" }) => {
+import { NavLink } from "react-router-dom";
+
+const Sidebar = () => {
   const links = [
-    { label: "Dashboard", path: "/", key: "dashboard", icon: "▦" },
-    { label: "Scheduled", path: "/scheduled", key: "scheduled", icon: "◷" },
-    { label: "Sent Emails", path: "/sent", key: "sent", icon: "✓" }
+    { label: "Dashboard", path: "/", icon: "▦", end: true },
+    { label: "Scheduled", path: "/scheduled", icon: "◷" },
+    { label: "Sent Emails", path: "/sent", icon: "✓" }
   ];
 
   return (
@@ -14,15 +16,16 @@ const Sidebar = ({ activePage = "dashboard" }) => {
 
       <nav className="sidebar-nav">
         {links.map((link) => (
-          <a
-            key={link.key}
-            href={link.path}
-            className={`side-link ${
-              activePage === link.key ? "active" : ""
-            }`}
+          <NavLink
+            key={link.path}
+            to={link.path}
+            end={link.end}
+            className={({ isActive }) =>
+              `side-link ${isActive ? "active" : ""}`
+            }
           >
             {link.icon} {link.label}
-          </a>
+          </NavLink>
         ))}
       </nav>
 

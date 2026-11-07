@@ -285,3 +285,30 @@ th {
     flex-direction: column;
   }
 }
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-nav .side-link {
+  display: block;
+  text-decoration: none;
+}
+
+.section-label {
+  margin-top: 24px;
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #30364b;
+}
+
+.error-message {
+  color: #c43d3d;
+}
+
+.success-message {
+  color: #16875d;
+}
