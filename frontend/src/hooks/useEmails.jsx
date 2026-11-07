@@ -4,16 +4,26 @@ import { emailApi } from "../api/emailApi";
 import { getErrorMessage } from "../utils/errorHandler";
 
 const extractEmails = (response) => {
-  return response.emails || response.data || [];
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.emails)) return response.emails;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
 };
 
 export const useEmails = () => {
   const [scheduled, setScheduled] = useState([]);
   const [sent, setSent] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
-  const refreshEmails = useCallback(async () => {
+  const refreshEmails = useCallback(async (initial = false) => {
+    if (initial) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
+
     try {
       setError("");
 
@@ -28,13 +38,16 @@ export const useEmails = () => {
       setError(getErrorMessage(err));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    refreshEmails();
+    refreshEmails(true);
 
-    const intervalId = setInterval(refreshEmails, 5000);
+    const intervalId = setInterval(() => {
+      refreshEmails(false);
+    }, 5000);
 
     return () => clearInterval(intervalId);
   }, [refreshEmails]);
@@ -43,6 +56,7 @@ export const useEmails = () => {
     scheduled,
     sent,
     loading,
+    refreshing,
     error,
     refreshEmails
   };
