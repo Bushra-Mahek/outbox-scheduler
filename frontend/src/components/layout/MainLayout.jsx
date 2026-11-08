@@ -1,16 +1,13 @@
 
 import Sidebar from "./Sidebar";
 
-const MainLayout = ({ children }) => {
+export default function MainLayout({ children }) {
   return (
-    <div className="app">
+    <div className="app-shell">
       <Sidebar />
-
-      <main className="main">
+      <main className="main-content">
         {children}
       </main>
     </div>
   );
-};
-
-export default MainLayout;
+}

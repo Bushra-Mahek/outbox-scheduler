@@ -1,233 +1,240 @@
-
 # Outbox Scheduler
 
-A full-stack asynchronous email scheduling platform built using React, Node.js, PostgreSQL, Redis and BullMQ.
+A reliable email scheduling and delivery platform built to manage scheduled campaigns, process emails asynchronously, enforce sending limits, and notify users when campaigns are throttled.
 
-Outbox Scheduler allows users to compose emails, schedule them for future delivery, monitor their status and cancel pending emails through a dashboard.
+## Overview
 
-## Features
+Outbox Scheduler allows users to compose and schedule email campaigns through a web interface. Instead of sending emails directly from an API request, the application uses background workers and a queue-based architecture to process deliveries independently.
 
-- Schedule emails for future delivery.
-- Persistent delayed job scheduling using BullMQ and Redis.
-- Background email processing using a dedicated worker.
-- Email delivery simulation using Nodemailer and Ethereal SMTP.
-- Track scheduled and sent emails.
-- Cancel pending scheduled emails.
-- PostgreSQL-based email status tracking.
-- Automatic dashboard data refresh.
-- Recovery of pending jobs after application process restarts.
+The system also implements hourly sending limits, delayed job processing, email history, and Slack notifications when a campaign reaches its sending limit.
+
+## Key Features
+
+- **Email Scheduling:** Compose emails and schedule delivery for a future date and time.
+- **Campaign Management:** Schedule multiple recipients under a single campaign.
+- **Background Processing:** Use BullMQ and Redis to process email jobs asynchronously.
+- **Hourly Sending Limits:** Enforce campaign-level hourly sending limits.
+- **Automatic Deferral:** Move jobs to a delayed state when the sending limit is reached.
+- **Slack Notifications:** Notify users through Slack when a campaign reaches its hourly sending limit.
+- **Scheduled Emails:** View and cancel upcoming email deliveries.
+- **Sent Email History:** View successfully processed emails.
+- **Email Preview:** Use Ethereal Email to test SMTP delivery and inspect sent messages.
+- **Search:** Elasticsearch integration for indexing and searching email records.
+- **Queue Monitoring:** Bull Board dashboard for monitoring background job queues.
 
 ## Tech Stack
 
-### Frontend
-- React
-- Vite
-- React Router
-- CSS
-- Custom React Hooks
+| Layer | Technologies |
+|---|---|
+| Frontend | React, Vite |
+| Backend | Node.js, Express.js, TypeScript |
+| Database | PostgreSQL |
+| Queue Management | BullMQ |
+| Queue Storage | Redis |
+| Email Delivery | Nodemailer, Ethereal Email |
+| Search and Indexing | Elasticsearch |
+| Notifications | Slack API, OAuth 2.0 |
+| Queue Monitoring | Bull Board |
 
-### Backend
-- Node.js
-- Express.js
-- PostgreSQL
-- BullMQ
-- Redis
-- Nodemailer
-- Ethereal SMTP
+## System Architecture
 
-## Architecture
-
-```text
-React Dashboard
-      |
-      v
-React Router
-      |
-      v
-Custom Hooks
-      |
-      v
-Email API Service
-      |
-      v
-Express REST API
-      |
-      +----------> PostgreSQL
-      |
-      v
-BullMQ Queue
-      |
-      v
-Redis
-      |
-      v
-Email Worker
-      |
-      v
-Nodemailer / Ethereal SMTP
-      |
-      v
-PostgreSQL Status Update
+```mermaid
+flowchart TD
+    A[React Frontend] --> B[Express API]
+    B --> C[(PostgreSQL)]
+    B --> D[(Redis / BullMQ)]
+    D --> E[Email Worker]
+    E --> F[Nodemailer]
+    F --> G[Ethereal SMTP]
+    E --> H[Hourly Rate Limiter]
+    H --> I[Delayed Jobs]
+    H --> J[Slack Notification Service]
+    J --> K[Slack API]
+    B --> L[Elasticsearch]
+    B --> M[Bull Board]
 ```
+
+### Email Processing Workflow
+
+1. A user composes an email campaign and selects recipients and a scheduled delivery time.
+2. The backend validates the request and stores campaign and email records in PostgreSQL.
+3. Email jobs are added to a BullMQ queue backed by Redis.
+4. A separate worker retrieves and processes queued jobs.
+5. Nodemailer handles email delivery through the configured SMTP provider.
+6. The hourly rate limiter checks whether the campaign has reached its sending limit.
+7. If the limit is reached, the remaining email job is deferred for the configured interval.
+8. The Slack notification service sends a notification to the connected Slack user.
+9. Email statuses are updated and records are indexed in Elasticsearch.
 
 ## Project Structure
 
 ```text
 OutBox_Scheduler/
+│
 ├── backend/
-│   ├── config/
-│   ├── controllers/
-│   ├── queues/
-│   ├── routes/
-│   ├── services/
-│   ├── workers/
-│   ├── app.js
-│   └── server.js
+│   ├── src/
+│   │   ├── config/
+│   │   ├── controllers/
+│   │   ├── middleware/
+│   │   ├── models/
+│   │   ├── queues/
+│   │   ├── routes/
+│   │   ├── services/
+│   │   ├── workers/
+│   │   ├── utils/
+│   │   └── server.ts
+│   ├── package.json
+│   └── tsconfig.json
 │
 ├── frontend/
-│   └── src/
-│       ├── api/
-│       ├── components/
-│       ├── hooks/
-│       ├── pages/
-│       ├── routes/
-│       ├── utils/
-│       ├── App.jsx
-│       └── main.jsx
+│   ├── src/
+│   └── package.json
 │
+├── .gitignore
 └── README.md
 ```
 
+*The directory structure above represents the main application organization. Adjust individual filenames if your final repository differs.*
+
 ## Prerequisites
 
-- Node.js
-- PostgreSQL
-- Docker Desktop
-- Redis
+Install the following before running the application:
 
-## Setup Instructions
+- Node.js and npm
+- PostgreSQL
+- Redis
+- Elasticsearch
+- A Slack application for OAuth integration
+
+## Installation and Setup
 
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
-cd OutBox_Scheduler
+git clone https://github.com/YOUR_USERNAME/outbox-scheduler.git
+cd outbox-scheduler
 ```
 
-### 2. Start Redis
-
-```bash
-docker run -d \
-  --name outbox-redis \
-  -p 6379:6379 \
-  -v outbox-redis-data:/data \
-  redis:7-alpine \
-  redis-server --appendonly yes
-```
-
-### 3. Configure PostgreSQL
-
-Create a database named:
-
-```text
-outbox_scheduler
-```
-
-Create the required emails table using the SQL schema provided in the backend setup.
-
-### 4. Configure backend environment
-
-Create `backend/.env`:
-
-```env
-PORT=5000
-
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/outbox_scheduler
-
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-
-SMTP_HOST=smtp.ethereal.email
-SMTP_PORT=587
-SMTP_USER=
-SMTP_PASS=
-```
-
-Ethereal test credentials can be generated automatically when SMTP credentials are not configured.
-
-### 5. Install backend dependencies
+### 2. Backend setup
 
 ```bash
 cd backend
 npm install
 ```
 
-### 6. Start the backend API
+Create a `.env` file in the backend directory and configure the required environment variables.
+
+Core configuration includes:
+
+```env
+PORT=5000
+DATABASE_URL=your_postgresql_connection_string
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+SMTP_HOST=your_smtp_host
+SMTP_PORT=your_smtp_port
+SMTP_USER=your_smtp_username
+SMTP_PASS=your_smtp_password
+```
+
+Configure the remaining Elasticsearch and Slack OAuth settings according to your backend configuration. Never commit actual credentials.
+
+### 3. Start the backend
 
 ```bash
 npm run dev
 ```
 
-### 7. Start the email worker
+### 4. Start the email worker
 
-Open another terminal:
+Open a separate terminal:
 
 ```bash
 cd backend
 npm run worker
 ```
 
-### 8. Install frontend dependencies
+The worker runs independently from the API server and processes queued email jobs.
+
+### 5. Start the frontend
+
+Open another terminal:
 
 ```bash
 cd frontend
 npm install
-```
-
-### 9. Start the frontend
-
-```bash
 npm run dev
 ```
 
-Open:
+Use the local URL displayed by Vite to access the application.
 
-http://localhost:5173
+### 6. Build the backend
 
-## API Endpoints
+```bash
+cd backend
+npm run build
+```
 
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/emails` | Schedule an email |
-| GET | `/api/emails` | Retrieve all emails |
-| GET | `/api/emails/scheduled` | Retrieve scheduled emails |
-| GET | `/api/emails/sent` | Retrieve sent emails |
-| DELETE | `/api/emails/:id` | Cancel a scheduled email |
+## Queue Monitoring
 
-## Reliability and Testing
+Bull Board provides a dashboard for monitoring background jobs and queue activity.
 
-The implementation has been tested for:
+Once the backend is running, access:
 
-- Delayed job execution through BullMQ.
-- Email status persistence in PostgreSQL.
-- Background processing through a dedicated worker.
-- Application process restart recovery while Redis remains running.
-- Cancellation of scheduled emails.
-- Skipping cancelled jobs.
-- SMTP test-message generation using Ethereal.
+```text
+http://localhost:5000/admin/queues
+```
 
-## Important Note
+## Email Testing
 
-Ethereal SMTP is a testing service. It captures messages for preview and does not deliver them to real recipient inboxes.
+The project uses Ethereal Email for test email delivery.
 
-BullMQ provides retryable background job processing. SMTP delivery and PostgreSQL updates are not an atomic transaction, so exactly-once email delivery is not guaranteed.
+Ethereal provides temporary SMTP accounts and email preview links, allowing developers to inspect test messages without sending emails to real recipients.
+
+## Slack Integration
+
+Outbox Scheduler integrates with Slack using OAuth 2.0.
+
+After connecting a Slack workspace, the application can send direct-message notifications when a campaign reaches its hourly sending limit.
+
+Example notification:
+
+> Outbox Scheduler: Hourly sending limit reached.  
+> Campaign: [Campaign Name]  
+> Sending will resume after approximately 60 minutes.
+
+## Rate Limiting Demonstration
+
+A test campaign with two recipients and an hourly sending limit of one demonstrates the rate-limiting mechanism.
+
+Expected behaviour:
+
+1. The first email is processed and sent.
+2. The second email detects that the hourly limit has been reached.
+3. BullMQ moves the second job to a delayed state.
+4. The worker logs the deferral.
+5. A Slack notification informs the user about the limit.
+6. The deferred email becomes eligible for processing after the delay.
 
 ## Future Improvements
 
-- Authentication and user-specific email management.
-- Retry monitoring and dead-letter handling.
-- Rate limiting and email provider integration.
-- Worker health monitoring.
-- Delivery idempotency and duplicate-send mitigation.
-- Deployment with managed Redis and PostgreSQL.
+- Support multiple SMTP sender accounts with configurable sending limits.
+- Add retry policies and more comprehensive failure handling.
+- Improve campaign analytics and delivery reporting.
+- Add configurable notification preferences.
+- Introduce more advanced queue monitoring and operational metrics.
+
+## Author
+
+**Bushra Mahek Maniyar**
+
+Computer Science and Engineering
+
+GitHub: [Bushra-Mahek](https://github.com/Bushra-Mahek)
+
+---
+
+**Outbox Scheduler — Reliable, asynchronous, and controlled email delivery.**

@@ -1,114 +1,113 @@
 
+import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import MainLayout from "../components/layout/MainLayout";
-import StatsCards from "../components/dashboard/StatsCards";
-import EmailForm from "../components/emails/EmailForm";
-import EmailTable from "../components/emails/EmailTable";
-
 import { useEmails } from "../hooks/useEmails";
-import { useScheduleEmail } from "../hooks/useScheduleEmail";
-import { useCancelEmail } from "../hooks/useCancelEmail";
 
-const Dashboard = () => {
-  const {
-    scheduled,
-    sent,
-    loading,
-    error: fetchError,
-    refreshEmails
-  } = useEmails();
+export default function Dashboard() {
+  const { scheduled = [], sent = [], loading, error, refreshEmails } = useEmails();
+  const [search, setSearch] = useState("");
+  const [starred, setStarred] = useState([]);
+  const navigate = useNavigate();
 
-  const {
-    scheduleEmail,
-    loading: scheduling,
-    error: scheduleError,
-    success
-  } = useScheduleEmail();
+  const emails = useMemo(() => {
+    const combined = [
+      ...scheduled.map(email => ({ ...email, displayStatus: "Scheduled" })),
+      ...sent.map(email => ({ ...email, displayStatus: "Sent" }))
+    ];
 
-  const {
-    cancelEmail,
-    loadingId,
-    error: cancelError
-  } = useCancelEmail();
+    return combined.filter(email => {
+      const text = [
+        email.recipient,
+        email.subject,
+        email.body,
+        email.status
+      ].join(" ").toLowerCase();
 
-  const handleSchedule = async (emailData) => {
-    await scheduleEmail(emailData);
-    await refreshEmails();
-  };
+      return text.includes(search.toLowerCase());
+    });
+  }, [scheduled, sent, search]);
 
-  const handleCancel = async (emailId) => {
-    if (!window.confirm("Are you sure you want to cancel this email?")) {
-      return;
-    }
-
-    try {
-      await cancelEmail(emailId);
-      await refreshEmails();
-    } catch {
-      // Cancellation error is exposed by useCancelEmail.
-    }
+  const toggleStar = (id) => {
+    setStarred(previous =>
+      previous.includes(id)
+        ? previous.filter(item => item !== id)
+        : [...previous, id]
+    );
   };
 
   return (
-    <MainLayout activePage="dashboard">
-      <header className="topbar">
-        <div>
-          <h1>Email Scheduler</h1>
-          <p>Manage and schedule your email campaigns.</p>
-        </div>
-        <span className="online">● System dashboard</span>
-      </header>
-
-      <StatsCards
-        scheduledCount={scheduled.length}
-        sentCount={sent.length}
-      />
-
-      <EmailForm
-        onSubmit={handleSchedule}
-        loading={scheduling}
-        error={scheduleError}
-        success={success}
-      />
-
-      <section className="table-card">
-        <div className="table-heading">
-          <div>
-            <h2>Email activity</h2>
-            <p className="muted">
-              Track your scheduled and sent emails.
-            </p>
-          </div>
-
-          <button className="refresh-btn" onClick={refreshEmails}>
-            ↻ Refresh
-          </button>
+    <MainLayout>
+      <div className="mail-toolbar">
+        <div className="search-box">
+          <span>⌕</span>
+          <input
+            placeholder="Search"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
         </div>
 
-        {(fetchError || cancelError) && (
-          <p className="message error-message">
-            {fetchError || cancelError}
-          </p>
-        )}
+        <button className="icon-button" title="Filter">▽</button>
+        <button
+          className="icon-button"
+          onClick={refreshEmails}
+          title="Refresh"
+        >
+          ↻
+        </button>
+      </div>
 
-        {loading ? (
-          <p className="empty">Loading emails...</p>
-        ) : (
-          <>
-            <h3 className="section-label">Scheduled emails</h3>
-            <EmailTable
-              emails={scheduled}
-              type="scheduled"
-              onCancel={handleCancel}
-              cancellingId={loadingId}
-            />
+      {error && <div className="notice error-message">{error}</div>}
 
-            <h3 className="section-label">Sent emails</h3>
-            <EmailTable emails={sent} type="sent" />
-          </>
-        )}
-      </section>
+      {loading ? (
+        <div className="empty-state">Loading emails...</div>
+      ) : emails.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon">✉</div>
+          <h3>No emails found</h3>
+          <p>Your email activity will appear here.</p>
+        </div>
+      ) : (
+        <div className="inbox-list">
+          {emails.map((email, index) => {
+            const id = email.id;
+            const isStarred = starred.includes(id);
+
+            return (
+              <div className="email-row" key={id || index}>
+                <button
+                  className={`star-button ${isStarred ? "starred" : ""}`}
+                  onClick={() => toggleStar(id)}
+                  title="Star email"
+                >
+                  {isStarred ? "★" : "☆"}
+                </button>
+
+                <div className="email-row-content">
+                  <div className="email-primary">
+                    <strong>To: {email.recipient}</strong>
+                    <span className={`mail-status ${email.displayStatus.toLowerCase()}`}>
+                      {email.displayStatus}
+                    </span>
+                    <span className="email-subject">{email.subject}</span>
+                  </div>
+
+                  <p className="email-preview">
+                    {email.body || "No message preview available"}
+                  </p>
+                </div>
+
+                <time className="email-time">
+                  {email.scheduled_at
+                    ? new Date(email.scheduled_at).toLocaleString()
+                    : ""}
+                </time>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </MainLayout>
   );
-};
-
-export default Dashboard;
+}

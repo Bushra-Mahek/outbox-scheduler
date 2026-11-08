@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import type { AuthenticatedRequest } from "../middleware/authMiddleware.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 
@@ -28,9 +29,18 @@ const emailSchema = z.object({
 );
 
 export const scheduleEmail = async (
-  req: Request,
+  req: AuthenticatedRequest,
   res: Response
 ): Promise<Response> => {
+  const userId = req.user?.userId;
+
+  if (!userId) {
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required"
+    });
+  }
+
   const client = await pool.connect();
 
   let transactionStarted = false;
@@ -116,6 +126,7 @@ export const scheduleEmail = async (
     const campaignResult = await client.query(
       `INSERT INTO campaigns (
         id,
+        user_id,
         name,
         subject,
         body,
@@ -126,10 +137,11 @@ export const scheduleEmail = async (
         hourly_limit,
         total_recipients
       )
-      VALUES ($1, $2, $3, $4, $5, $6, 'scheduled', $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', $8, $9, $10)
       RETURNING *`,
       [
         campaignId,
+        userId,
         campaignName ?? null,
         subject,
         body,
@@ -146,6 +158,7 @@ export const scheduleEmail = async (
     for (const emailRecipient of normalizedRecipients) {
       const emailResult = await client.query(
         `INSERT INTO emails (
+          user_id,
           recipient,
           subject,
           body,
@@ -154,9 +167,10 @@ export const scheduleEmail = async (
           campaign_id,
           sender_account_id
         )
-        VALUES ($1, $2, $3, $4, 'scheduled', $5, $6)
+        VALUES ($1, $2, $3, $4, $5, 'scheduled', $6, $7)
         RETURNING *`,
         [
+          userId,
           emailRecipient,
           subject,
           body,

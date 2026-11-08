@@ -7,6 +7,7 @@ import {
 
 import pool from "../config/db.js";
 import { createRedisConnection } from "../config/redis.js";
+import { sendHourlyLimitNotification } from "../services/slackService.js";
 
 import {
   initializeEmailService,
@@ -195,6 +196,11 @@ const startWorker = async (): Promise<void> => {
         );
 
         if (waitMs > 0) {
+          try {
+  await sendHourlyLimitNotification(email.campaign_id, waitMs);
+} catch (error) {
+  console.error("Slack hourly-limit notification failed:", error);
+}
           if (!job.token) {
             throw new Error(
               "BullMQ job lock token is unavailable"
