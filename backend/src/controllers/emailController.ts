@@ -1,12 +1,14 @@
-
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+
 import {
   bulkIndexEmails,
   updateIndexedEmailStatus,
+  searchEmails,
   type EmailSearchDocument
 } from "../services/searchService.js";
+
 import pool from "../config/db.js";
 import { emailQueue } from "../queues/emailQueue.js";
 
@@ -396,7 +398,9 @@ export const cancelEmail = async (
   res: Response
 ): Promise<Response> => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id)
+  ? req.params.id[0]
+  : req.params.id;
 
     if (!id) {
       return res.status(400).json({
@@ -477,3 +481,85 @@ export const cancelEmail = async (
     });
   }
 };
+
+
+// GET /api/emails/search
+export const searchEmailRecords = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
+  try {
+    const query = String(req.query.q ?? "").trim();
+    const status = String(req.query.status ?? "").trim();
+    const from = String(req.query.from ?? "").trim();
+    const to = String(req.query.to ?? "").trim();
+
+    const page = Math.max(
+      1,
+      Number.parseInt(String(req.query.page ?? "1"), 10) || 1
+    );
+
+    const limit = Math.min(
+      100,
+      Math.max(
+        1,
+        Number.parseInt(String(req.query.limit ?? "10"), 10) || 10
+      )
+    );
+
+    const allowedStatuses = [
+      "scheduled",
+      "processing",
+      "sent",
+      "failed",
+      "cancelled"
+    ];
+
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email status"
+      });
+    }
+
+    if (
+      (from && Number.isNaN(Date.parse(from))) ||
+      (to && Number.isNaN(Date.parse(to)))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date filter"
+      });
+    }
+
+    if (from && to && new Date(from) > new Date(to)) {
+      return res.status(400).json({
+        success: false,
+        message: "'from' date must be before 'to' date"
+      });
+    }
+
+    const result = await searchEmails({
+      query: query || undefined,
+      status: status || undefined,
+      from: from || undefined,
+      to: to || undefined,
+      page,
+      limit
+    });
+
+    return res.status(200).json({
+      success: true,
+      ...result
+    });
+
+  } catch (error) {
+    console.error("Email search error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Could not search emails"
+    });
+  }
+};
+
